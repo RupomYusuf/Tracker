@@ -13,13 +13,14 @@ type ProgressRow = {
   updatedAt: string;
 };
 
-// Central client hook: loads /api/state, handles the access-code gate and
-// applies optimistic progress updates that are POSTed to the server.
-export function useTracker() {
-  const [sheets, setSheets] = useState<Sheet[]>([]);
-  const [progress, setProgress] = useState<ProgressRow[]>([]);
-  const [authed, setAuthed] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+// Central client hook: starts from server-rendered initial data when provided
+// (no client fetch waterfall), handles the access-code gate and applies
+// optimistic progress updates that are POSTed to the server.
+export function useTracker(initial?: { sheets: Sheet[]; progress: ProgressRow[] }) {
+  const [sheets, setSheets] = useState<Sheet[]>(initial?.sheets ?? []);
+  const [progress, setProgress] = useState<ProgressRow[]>(initial?.progress ?? []);
+  const [authed, setAuthed] = useState<boolean | null>(initial ? true : null);
+  const [loading, setLoading] = useState(!initial);
 
   const refresh = useCallback(async () => {
     const res = await fetch("/api/state", { cache: "no-store" });

@@ -42,3 +42,6 @@ next-env.d.ts
 
 # local fallback data store
 /.data
+
+.vercel
+.env*

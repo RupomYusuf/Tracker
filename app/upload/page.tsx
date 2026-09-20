@@ -1,8 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
-import { useTracker } from "@/components/useTracker";
+import { useEffect, useRef, useState } from "react";
 import { LoginGate } from "@/components/ui";
 
 type Detected = {
@@ -89,7 +88,7 @@ function detect(text: string): Detected {
 
 export default function UploadPage() {
   const router = useRouter();
-  const { authed, refresh } = useTracker();
+  const [authed, setAuthed] = useState<boolean | null>(null);
   const [form, setForm] = useState<Detected>(empty());
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -97,7 +96,14 @@ export default function UploadPage() {
   const [previews, setPreviews] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  if (authed === false) return <LoginGate onDone={refresh} />;
+  if (authed === false) return <LoginGate onDone={() => setAuthed(true)} />;
+
+  useEffect(() => {
+    fetch("/api/auth")
+      .then((r) => r.json())
+      .then((d) => setAuthed(Boolean(d.authed)))
+      .catch(() => setAuthed(false));
+  }, []);
 
   const set = (k: keyof Detected, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -169,7 +175,6 @@ export default function UploadPage() {
     setBusy(false);
     if (res.ok) {
       const { sheet } = await res.json();
-      await refresh();
       router.push(`/sheet/${sheet.id}`);
     } else {
       setStatus(res.status === 401 ? "Locked — enter access code first." : "Failed to save. Try again.");

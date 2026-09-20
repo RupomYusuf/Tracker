@@ -221,7 +221,7 @@ export const KIND_COLORS: Record<Kind, string> = {
   extra: "#34d399",
 };
 
-export function LoginGate({ onDone }: { onDone: () => void }) {
+export function LoginGate({ onDone }: { onDone?: () => void }) {
   const [code, setCode] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -239,8 +239,10 @@ export function LoginGate({ onDone }: { onDone: () => void }) {
             body: JSON.stringify({ code }),
           });
           setBusy(false);
-          if (res.ok) onDone();
-          else setErr("Wrong access code");
+          if (res.ok) {
+            if (onDone) onDone();
+            else window.location.reload();
+          } else setErr("Wrong access code");
         }}
       >
         <h1 className="text-xl font-bold mb-1">

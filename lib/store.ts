@@ -89,55 +89,68 @@ function saveFile() {
 
 // --------------------------- postgres-backed store -------------------------
 
-// Lazy require so the app also builds/runs without a DATABASE_URL.
-function getPool() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Pool } = require("pg");
-  return new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: /localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL ?? "")
-      ? false
-      : { rejectUnauthorized: false },
-    max: 3,
-  });
+// Uses Neon's HTTP driver for *.neon.tech databases (no TCP/TLS/auth handshake
+// per serverless invocation — one fetch per query), and pg for everything else.
+type QueryFn = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+
+let queryFn: QueryFn | null = null;
+
+function q(): QueryFn {
+  if (queryFn) return queryFn;
+  const url = process.env.DATABASE_URL!;
+  if (/neon\.tech/.test(url)) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { neon } = require("@neondatabase/serverless");
+    const sql = neon(url);
+    queryFn = async (text, params = []) => ({ rows: await sql.query(text, params) });
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Pool } = require("pg");
+    const pool = new Pool({
+      connectionString: url,
+      ssl: /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: false },
+      max: 3,
+    });
+    queryFn = (text, params) => pool.query(text, params);
+  }
+  return queryFn;
 }
 
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS sheets (
-  id SERIAL PRIMARY KEY,
-  subject TEXT NOT NULL,
-  lecture INT NOT NULL,
-  title TEXT NOT NULL,
-  topics JSONB NOT NULL DEFAULT '[]',
-  counts JSONB NOT NULL DEFAULT '{}',
-  meta JSONB NOT NULL DEFAULT '{}',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS progress (
-  sheet_id INT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,
-  idx INT NOT NULL,
-  topic TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'none',
-  flagged BOOLEAN NOT NULL DEFAULT false,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (sheet_id, kind, idx, topic)
-);
-`;
+const SCHEMA_SQL = [
+  `CREATE TABLE IF NOT EXISTS sheets (
+    id SERIAL PRIMARY KEY,
+    subject TEXT NOT NULL,
+    lecture INT NOT NULL,
+    title TEXT NOT NULL,
+    topics JSONB NOT NULL DEFAULT '[]',
+    counts JSONB NOT NULL DEFAULT '{}',
+    meta JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS progress (
+    sheet_id INT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    idx INT NOT NULL,
+    topic TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'none',
+    flagged BOOLEAN NOT NULL DEFAULT false,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (sheet_id, kind, idx, topic)
+  )`,
+];
 
 let schemaReady: Promise<void> | null = null;
 
 function ensureSchemaPg() {
   if (!schemaReady) {
     schemaReady = (async () => {
-      const pool = getPool();
-      await pool.query(SCHEMA_SQL);
-      const { rows } = await pool.query("SELECT COUNT(*)::int AS n FROM sheets");
+      for (const stmt of SCHEMA_SQL) await q()(stmt);
+      const { rows } = await q()("SELECT COUNT(*)::int AS n FROM sheets");
       if (rows[0].n === 0) {
         for (const seed of SEED_SHEETS) {
-          const { rows } = await pool.query(
+          await q()(
             `INSERT INTO sheets (subject, lecture, title, topics, counts, meta)
-             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+             VALUES ($1,$2,$3,$4,$5,$6)`,
             [
               seed.subject,
               seed.lecture,
@@ -180,32 +193,31 @@ export async function getState(): Promise<State> {
     };
   }
   await ensureSchemaPg();
-  const pool = getPool();
-  const sheetRows = await pool.query(
+  const sheetRows = await q()(
     "SELECT id, subject, lecture, title, topics, counts, meta, created_at FROM sheets ORDER BY subject, lecture, id"
   );
-  const progressRows = await pool.query(
+  const progressRows = await q()(
     "SELECT sheet_id, kind, idx, topic, status, flagged, updated_at FROM progress"
   );
   return {
     sheets: sheetRows.rows.map((r: Record<string, unknown>) => ({
-      id: r.id,
-      subject: r.subject,
-      lecture: r.lecture,
-      title: r.title,
-      topics: r.topics,
-      counts: r.counts,
-      meta: r.meta,
-      createdAt: r.created_at,
+      id: Number(r.id),
+      subject: String(r.subject),
+      lecture: Number(r.lecture),
+      title: String(r.title),
+      topics: r.topics as Sheet["topics"],
+      counts: r.counts as Sheet["counts"],
+      meta: r.meta as Sheet["meta"],
+      createdAt: r.created_at ? String(r.created_at) : undefined,
     })),
     progress: progressRows.rows.map((r: Record<string, unknown>) => ({
-      sheetId: r.sheet_id,
-      kind: r.kind,
-      idx: r.idx,
-      topic: r.topic,
-      status: r.status,
-      flagged: r.flagged,
-      updatedAt: r.updated_at,
+      sheetId: Number(r.sheet_id),
+      kind: String(r.kind) as Kind,
+      idx: Number(r.idx),
+      topic: String(r.topic ?? ""),
+      status: String(r.status) as Status,
+      flagged: Boolean(r.flagged),
+      updatedAt: new Date(String(r.updated_at)).toISOString(),
     })),
   };
 }
@@ -249,15 +261,14 @@ export async function setProgress(input: ProgressInput): Promise<void> {
     return;
   }
   await ensureSchemaPg();
-  const pool = getPool();
   const empty = input.status === "none" && !input.flagged;
   if (empty) {
-    await pool.query(
+    await q()(
       "DELETE FROM progress WHERE sheet_id=$1 AND kind=$2 AND idx=$3 AND topic=$4",
       [input.sheetId, input.kind, input.idx, topic]
     );
   } else {
-    await pool.query(
+    await q()(
       `INSERT INTO progress (sheet_id, kind, idx, topic, status, flagged, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,now())
        ON CONFLICT (sheet_id, kind, idx, topic)
@@ -298,21 +309,20 @@ export async function createSheet(input: NewSheetInput): Promise<Sheet> {
     return toSheet(sheet);
   }
   await ensureSchemaPg();
-  const pool = getPool();
-  const { rows } = await pool.query(
+  const { rows } = await q()(
     `INSERT INTO sheets (subject, lecture, title, topics, counts, meta)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, created_at`,
     [input.subject, input.lecture, input.title, JSON.stringify(input.topics), JSON.stringify(counts), JSON.stringify(meta)]
   );
   return {
-    id: rows[0].id,
+    id: Number(rows[0].id),
     subject: input.subject,
     lecture: input.lecture,
     title: input.title,
     topics: input.topics,
     counts,
     meta,
-    createdAt: rows[0].created_at,
+    createdAt: rows[0].created_at ? String(rows[0].created_at) : undefined,
   };
 }
 
@@ -325,7 +335,6 @@ export async function deleteSheet(id: number): Promise<void> {
     return;
   }
   await ensureSchemaPg();
-  const pool = getPool();
-  await pool.query("DELETE FROM progress WHERE sheet_id=$1", [id]);
-  await pool.query("DELETE FROM sheets WHERE id=$1", [id]);
+  await q()("DELETE FROM progress WHERE sheet_id=$1", [id]);
+  await q()("DELETE FROM sheets WHERE id=$1", [id]);
 }

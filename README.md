@@ -24,7 +24,7 @@ Without a database it uses a local JSON store in `.data/` — perfect for trying
 ## Deploy on Vercel (production, syncs from any device)
 
 1. Push this folder to a GitHub repo, then import it on [vercel.com/new](https://vercel.com/new) (or run `npx vercel` from this folder).
-2. In the Vercel project → **Storage → Create Database → Postgres (Neon)**. The `DATABASE_URL` env var is added automatically. (Any Postgres works — Neon, Supabase, RDS — just set `DATABASE_URL`.)
+2. Database: Neon Postgres (`ibamba-tracker-db-sg`, Singapore region) is attached to the project and sets `DATABASE_URL` automatically. The function runs in `sin1` (see `vercel.json`) close to the DB.
 3. Optional: set `ACCESS_CODE` to a secret phrase so only you can view/edit progress from your devices.
 4. Deploy. The database schema and the 11 seeded sheets are created automatically on the first visit. Your progress lives in Postgres, so every device stays in sync.
 
